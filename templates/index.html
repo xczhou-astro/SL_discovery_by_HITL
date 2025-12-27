@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strong Lensing Detector</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Strong Lensing Detector</h1>
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="label">Round:</span>
+                    <span id="current-round" class="count">1</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">Selected SL:</span>
+                    <span id="sl-count" class="count">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">Selected Non-SL:</span>
+                    <span id="non-sl-count" class="count">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">Available:</span>
+                    <span id="available-count" class="count">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">Total Submissions:</span>
+                    <span id="total-submissions" class="count">0</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- <div class="controls">
+            <button id="sl-gallery-btn" class="btn btn-info" onclick="window.location.href='/gallery'">Gallery</button>
+        </div> -->
+        
+        <!-- Training Overlay -->
+        <div id="training-overlay" class="training-overlay" style="display: none;">
+            <div class="training-overlay-content">
+                <h2>Training Model...</h2>
+                <div class="spinner"></div>
+                <p id="training-message">Please wait while the model is being trained.</p>
+            </div>
+        </div>
+
+        <!-- Visualization Section (only shown after training) -->
+        <div id="visualization-section" class="visualization-section" style="display: none;">
+            <h3>Model Results</h3>
+            <div class="visualization-container">
+                <img id="visualization-image" src="" alt="Training Results" style="max-width: 100%; height: auto;">
+            </div>
+        </div>
+
+        <div class="image-grid-container">
+            <div id="image-grid" class="image-grid">
+                <!-- Images will be loaded here -->
+            </div>
+        </div>
+
+        <!-- Instructions -->
+        <!-- <div class="instructions">
+            <div class="instruction-item">
+                <span class="instruction-icon non-sl-icon">👆</span>
+                <span class="instruction-text">Left click to <strong>hide/mark as Non-SL</strong> (click again to unhide)</span>
+            </div>
+            <div class="instruction-item">
+                <span class="instruction-icon sl-icon">✓</span>
+                <span class="instruction-text">All visible images will be marked as <strong>Strong Lensing</strong> when submitted</span>
+            </div>
+        </div> -->
+
+        <div class="selection-controls">
+            <div class="submit-controls">
+                <button id="submit-selections-btn" class="btn btn-primary">Submit</button>
+                <button id="clear-selections-btn" class="btn btn-secondary">Clear Hidden</button>
+                <button id="sl-gallery-btn" class="btn btn-info" onclick="window.location.href='/gallery'">Gallery</button>
+            </div>
+        </div>
+
+        <!-- Notification -->
+        <div id="notification" class="notification"></div>
+
+    </div>
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
