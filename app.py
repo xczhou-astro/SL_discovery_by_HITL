@@ -106,7 +106,7 @@ class LatentClassifier(nn.Module):
     """
     Classifier using a gMLP block for a single latent vector input.
     """
-    def __init__(self, input_dim=768, d_ffn_factor=2, depth=2, bayesian=False, dropout_rate=0.2):
+    def __init__(self, input_dim=384, d_ffn_factor=2, depth=2, bayesian=False, dropout_rate=0.2):
         super().__init__()
         # We treat the input dimension as the sequence length
         self.seq_len = input_dim
@@ -131,16 +131,16 @@ class LatentClassifier(nn.Module):
         self.classifier = nn.Linear(input_dim, 1)
 
     def forward(self, x):
-        # Input x has shape [batch_size, 768]
+        # Input x has shape [batch_size, input_dim]
         
-        # 1. Reshape for gMLP: [batch_size, 768] -> [batch_size, 768, 1]
-        # This treats the feature dimension (768) as the "sequence".
+        # 1. Reshape for gMLP: [batch_size, input_dim] -> [batch_size, input_dim, 1]
+        # This treats the feature dimension (input_dim) as the "sequence".
         x = x.unsqueeze(-1)
 
         # 2. Pass through the gMLP block(s)
         gmlp_output = self.gmlp_layers(x)
 
-        # 3. Reshape back to original format: [batch_size, 768, 1] -> [batch_size, 768]
+        # 3. Reshape back to original format: [batch_size, input_dim, 1] -> [batch_size, input_dim]
         x = gmlp_output.squeeze(-1)
         
         # 4. Apply dropout after gMLP
@@ -186,19 +186,18 @@ class FocalLoss(nn.Module):
         focal_loss = alpha_weight * focal_weight * bce_loss
         
         return focal_loss.mean()
-
+    
 class SLDetector:
-    def __init__(self, data_path="../data/embeddings_v3_ABmaglt25.npz", 
-                 images_path="../data/JWST_SPRING_v3-grids_names_ABmaglt25", 
-                 dataframe_path='../data/JWST_SPRING_v3.csv',
-                 dropped_data_path='../data/exclude.csv',
-                 init_neg_path='../data/init_neg_samples.csv',):
+    
+    def __init__(self, data_path='/Users/xczhou/Desktop/slwork/new_data/embeddings.npz', 
+                images_path='/Users/xczhou/Desktop/slwork/new_data/JWST_images',
+                dataframe_path='/Users/xczhou/Desktop/slwork/new_data/JWST_SL_discovery_catalog.csv',
+                embedding_size=384):
         
         self.data_path = data_path
         self.images_path = images_path
         self.dataframe_path = dataframe_path
-        self.dropped_data_path = dropped_data_path
-        self.init_neg_path = init_neg_path
+        self.embedding_size = embedding_size
         
         self.norm_method = 'layer' # layer or batch
         self.loss_method = 'bce' # focal or bce
@@ -207,25 +206,23 @@ class SLDetector:
         
         self.random_seed = seed
         self.filter = True
-        self.exclude_dropped = False
         self.latents_scaled = False
         
         self.ensemble_size = 5
         self.ensembles = []
         self.supplement_ratio = 0.3
-        self.num_submission_train = 100
+        self.num_submission_train = 30
         
         config = {
             'random_seed': self.random_seed,
             'filter': self.filter,
-            'exclude_dropped': self.exclude_dropped,
             'latents_scaled': self.latents_scaled,
             'ensemble_size': self.ensemble_size,
             'supplement_ratio': self.supplement_ratio,
             'num_submission_train': self.num_submission_train,
             'norm_method': self.norm_method,
             'loss_method': self.loss_method,
-            
+            'embedding_size': self.embedding_size,
         }
         
         with open(f'{results_path}/config.json', 'w') as f:
@@ -248,6 +245,8 @@ class SLDetector:
         self.total_submissions = 0  # Counter for total submissions
         self.increment = 0
         self.last_sl_count = 0
+        
+        self.num_selected_sl_history = []
         
         self.available_names = []
         
@@ -275,16 +274,10 @@ class SLDetector:
         df_names = self.df['name']
         
         if self.filter:
-            # self.df = self.df[self.df['ABmag_444W'] < 25]
-            self.df = self.df[self.df['ABmag_444W'] < 24]
+            # consider the max magnitude of candidates from COWLS
+            self.df = self.df[self.df['ABmag_F444W'] < 24.6]
             df_names = self.df['name']
         
-        if self.exclude_dropped:
-            df_exclude = pd.read_csv(self.dropped_data_path)
-            df_exclude = df_exclude[df_exclude['score'] > 0.9]
-            exclude_names = df_exclude['name'].tolist()
-            df_names = df_names[~df_names.isin(exclude_names)]
-            
         print(f"Final dataset: {len(df_names)} total images")
         
         self.cowls_sl_names = self.df[self.df['COWLS'] == 1]['name'].tolist()
@@ -423,7 +416,7 @@ class SLDetector:
     def train_model(self, epochs=300):
         
         # Create and add new model first
-        model = LatentClassifier(input_dim=768, d_ffn_factor=2, depth=2, 
+        model = LatentClassifier(input_dim=self.embedding_size, d_ffn_factor=2, depth=2, 
                                  bayesian=False)
         self.ensembles.append(model)
         
@@ -554,6 +547,12 @@ class SLDetector:
     def update_scores(self):
         
         self.increment = len(self.selected_sl_names) - self.last_sl_count
+        
+        # increment of selected SL in previous 5 rounds
+        self.num_selected_sl_history.append(self.increment)
+        if len(self.num_selected_sl_history) > 5:
+            self.num_selected_sl_history.pop(0)
+        
         self.last_sl_count = len(self.selected_sl_names)
         
         print('Increment SL sources: ', self.increment)
@@ -636,6 +635,7 @@ class SLDetector:
             'non_sl_count': len(self.selected_non_sl_names),
             'total_submissions': self.total_submissions,
             'increment_sl_count': self.increment,
+            'mean_num_selected_sl_history': np.mean(self.num_selected_sl_history).item(),
             'model_trained': self.model_trained,
             'num_ensembles': len(self.ensembles),
             'dividing_threshold': self.dividing_threshold,
@@ -865,6 +865,7 @@ class SLDetector:
             self.increment = records['increment_sl_count']
             self.round_save_path = round_path
             num_ensembles = records['num_ensembles']
+            self.num_selected_sl_history = records['mean_num_selected_sl_history']
             
             self.stats['min_score'] = records['min_score']
             self.stats['min_score_cowls'] = records['min_score_cowls']
@@ -879,7 +880,7 @@ class SLDetector:
             
             for i in range(num_ensembles):
                 
-                model = LatentClassifier(input_dim=768, d_ffn_factor=2, depth=2)
+                model = LatentClassifier(input_dim=self.embedding_size, d_ffn_factor=2, depth=2)
                 
                 model_state = checkpoint[f'model_{i}']
                 model.load_state_dict(model_state)
@@ -1089,60 +1090,21 @@ def get_gallery_data():
                 'grade': 'N/A'
             })
         
-        # Create high-score candidates (only if model is trained)
-        high_score_items = []
-        if sl_detector.model_trained and sl_detector.scores:
-            min_score = sl_detector.stats.get('min_score', 0.0)
-            
-            # Find ALL sources with scores above min_score (including selected ones)
-            high_score_candidates = []
-            for name, score in sl_detector.scores.items():
-                if score > min_score:
-                    high_score_candidates.append((name, score))
-            
-            # Sort by score (highest first)
-            high_score_candidates.sort(key=lambda x: x[1], reverse=True)
-            
-            # Check if source is confirmed or selected
-            confirmed_sl_set = set(sl_detector.cowls_sl_names)
-            selected_sl_set = set(sl_detector.selected_sl_names)
-            selected_non_sl_set = set(sl_detector.selected_non_sl_names)
-            
-            for name, score in high_score_candidates:
-                is_confirmed = name in confirmed_sl_set
-                is_selected_sl = name in selected_sl_set and not is_confirmed
-                is_selected_non_sl = name in selected_non_sl_set
-                
-                high_score_items.append({
-                    'name': name,
-                    'type': 'high_score',
-                    'is_confirmed': is_confirmed,
-                    'is_selected_sl': is_selected_sl,
-                    'is_selected_non_sl': is_selected_non_sl,
-                    'grade': sl_detector.name_to_grade.get(name, 'N/A'),
-                    'score': float(score)
-                })
-            
-            print(f'High-score candidates (score > {min_score:.4f}): {len(high_score_items)}')
-        
-        # Combine: confirmed SL first, then user-selected SL, then user-selected non-SL, then high-score candidates
-        gallery_items = confirmed_items + user_selected_sl_items + user_selected_non_sl_items + high_score_items
+        # Combine: confirmed SL first, then user-selected SL, then user-selected non-SL
+        gallery_items = confirmed_items + user_selected_sl_items + user_selected_non_sl_items
         
         print(f'Total gallery items: {len(gallery_items)}')
         print(f'  - Confirmed SL items: {len(confirmed_items)}')
         print(f'  - User-selected SL items: {len(user_selected_sl_items)}')
         print(f'  - User-selected non-SL items: {len(user_selected_non_sl_items)}')
-        print(f'  - High-score candidates: {len(high_score_items)}')
         
         return jsonify({
             'success': True,
-            'items': gallery_items,
+            'items': gallery_items.tolist() if isinstance(gallery_items, np.ndarray) else gallery_items,
             'total_count': len(gallery_items),
             'confirmed_count': len(confirmed_sl_names),
             'selected_sl_count': len(user_selected_sl_names),
-            'selected_non_sl_count': len(user_selected_non_sl_names),
-            'high_score_count': len(high_score_items),
-            'min_score': sl_detector.stats.get('min_score', 0.0) if sl_detector.model_trained else None
+            'selected_non_sl_count': len(user_selected_non_sl_names)
         })
     except Exception as e:
         print('Error getting gallery data:', str(e))

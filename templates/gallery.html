@@ -183,7 +183,6 @@
                 <div class="gallery-info">
                     <button class="btn btn-primary" onclick="showSLGallery()" id="sl-tab-btn">SL Gallery</button>
                     <button class="btn btn-secondary" onclick="showNonSLGallery()" id="non-sl-tab-btn">Non-SL Gallery</button>
-                    <button class="btn btn-secondary" onclick="showHighScoreGallery()" id="high-score-tab-btn">High-Score Candidates</button>
                 </div>
             </div>
         </header>
@@ -244,36 +243,6 @@
                     </span>
                     <button id="non-sl-next-page-btn" onclick="nextNonSLPage()">Next →</button>
                     <button id="non-sl-last-page-btn" onclick="goToLastNonSLPage()">Last ⏭</button>
-                </div>
-            </div>
-        </div>
-
-        <!-- High-Score Gallery -->
-        <div id="high-score-gallery-section" style="display: none;">
-            <div class="gallery-info" style="margin-bottom: 20px;">
-                <div class="info-badge" style="background: #9b59b6;">
-                    <span>High-Score Candidates: </span>
-                    <span id="high-score-total-count">0</span>
-                </div>
-                <div class="info-badge" style="background: #34495e;">
-                    <span>Min Score Threshold: </span>
-                    <span id="high-score-min-threshold">N/A</span>
-                </div>
-            </div>
-            
-            <div class="image-grid-container">
-                <div id="high-score-gallery-grid" class="gallery-grid">
-                    <!-- High-Score Gallery items will be loaded here -->
-                </div>
-                
-                <div class="pagination-controls">
-                    <button id="high-score-first-page-btn" onclick="goToHighScorePage(1)">⏮ First</button>
-                    <button id="high-score-prev-page-btn" onclick="previousHighScorePage()">← Previous</button>
-                    <span class="page-info">
-                        Page <span id="high-score-current-page">1</span> of <span id="high-score-total-pages">1</span>
-                    </span>
-                    <button id="high-score-next-page-btn" onclick="nextHighScorePage()">Next →</button>
-                    <button id="high-score-last-page-btn" onclick="goToLastHighScorePage()">Last ⏭</button>
                 </div>
             </div>
         </div>
