@@ -39,11 +39,33 @@ class SLDetector {
         
         // Notification
         this.notification = document.getElementById('notification');
+        
+        // Image popup modal elements
+        this.imagePopupModal = document.getElementById('image-popup-modal');
+        this.popupImage = document.getElementById('popup-image');
+        this.popupInfo = document.getElementById('popup-info');
+        this.popupZoomInfo = document.getElementById('popup-zoom-info');
+        this.popupClose = document.getElementById('popup-close');
+        this.imageZoomScale = 1.0;
+        
+        // Bind zoom handler so we can remove it later
+        this.boundHandleImageZoom = this.handleImageZoom.bind(this);
     }
     
     bindEvents() {
         this.submitSelectionsBtn.addEventListener('click', () => this.submitSelections());
         this.clearSelectionsBtn.addEventListener('click', () => this.clearSelections());
+        
+        // Image popup modal events
+        this.popupClose.addEventListener('click', () => this.closeImagePopup());
+        this.imagePopupModal.addEventListener('click', (e) => {
+            if (e.target === this.imagePopupModal) {
+                this.closeImagePopup();
+            }
+        });
+        
+        // Prevent right-click context menu on popup
+        this.popupImage.addEventListener('contextmenu', (e) => e.preventDefault());
     }
     
     async loadInitialData() {
@@ -156,9 +178,10 @@ class SLDetector {
                 this.toggleHidden(galaxyName, imageItem);
             });
             
-            // Prevent right-click context menu
+            // Right-click to open image popup
             imageItem.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
+                this.openImagePopup(img.src, galaxyName, score);
             });
             
             imageItem.appendChild(imageContent);
@@ -369,6 +392,48 @@ class SLDetector {
         setTimeout(() => {
             this.notification.classList.remove('show');
         }, 3000);
+    }
+    
+    openImagePopup(imageSrc, galaxyName, score) {
+        this.popupImage.src = imageSrc;
+        this.popupInfo.textContent = `${galaxyName} | Score: ${score.toFixed(3)}`;
+        this.imageZoomScale = 1.0;
+        this.popupImage.style.transform = `scale(${this.imageZoomScale})`;
+        this.imagePopupModal.classList.add('active');
+        this.updateZoomInfo();
+        
+        // Add scroll event listener for zooming
+        this.imagePopupModal.addEventListener('wheel', this.boundHandleImageZoom, { passive: false });
+        
+        // Prevent body scroll when modal is open
+        document.body.style.overflow = 'hidden';
+    }
+    
+    closeImagePopup() {
+        this.imagePopupModal.classList.remove('active');
+        this.imageZoomScale = 1.0;
+        this.popupImage.style.transform = 'scale(1)';
+        
+        // Remove scroll event listener
+        this.imagePopupModal.removeEventListener('wheel', this.boundHandleImageZoom);
+        
+        // Restore body scroll
+        document.body.style.overflow = '';
+    }
+    
+    handleImageZoom(e) {
+        e.preventDefault();
+        
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        this.imageZoomScale = Math.max(0.5, Math.min(5.0, this.imageZoomScale + delta));
+        
+        this.popupImage.style.transform = `scale(${this.imageZoomScale})`;
+        this.updateZoomInfo();
+    }
+    
+    updateZoomInfo() {
+        const zoomPercent = Math.round(this.imageZoomScale * 100);
+        this.popupZoomInfo.textContent = `Zoom: ${zoomPercent}% | Scroll to zoom`;
     }
 }
 

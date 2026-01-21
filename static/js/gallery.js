@@ -37,6 +37,26 @@ class GalleryManager {
         this.nonSlTabBtn = document.getElementById('non-sl-tab-btn');
         
         this.notification = document.getElementById('notification');
+        
+        // Image popup modal elements
+        this.imagePopupModal = document.getElementById('image-popup-modal');
+        this.popupImage = document.getElementById('popup-image');
+        this.popupInfo = document.getElementById('popup-info');
+        this.popupZoomInfo = document.getElementById('popup-zoom-info');
+        this.popupClose = document.getElementById('popup-close');
+        this.imageZoomScale = 1.0;
+        
+        // Bind zoom handler so we can remove it later
+        this.boundHandleImageZoom = this.handleImageZoom.bind(this);
+        
+        // Bind popup events
+        this.popupClose.addEventListener('click', () => this.closeImagePopup());
+        this.imagePopupModal.addEventListener('click', (e) => {
+            if (e.target === this.imagePopupModal) {
+                this.closeImagePopup();
+            }
+        });
+        this.popupImage.addEventListener('contextmenu', (e) => e.preventDefault());
     }
     
     async loadGalleryData() {
@@ -170,6 +190,15 @@ class GalleryManager {
         overlay.className = 'gallery-item-overlay';
         overlay.textContent = item.name;
         
+        // Right-click to open image popup
+        galleryItem.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            const infoText = item.grade && item.grade !== 'N/A' 
+                ? `${item.name} | Grade: ${item.grade}` 
+                : item.name;
+            this.openImagePopup(img.src, infoText);
+        });
+        
         galleryItem.appendChild(img);
         galleryItem.appendChild(overlay);
         
@@ -210,6 +239,48 @@ class GalleryManager {
         setTimeout(() => {
             this.notification.classList.remove('show');
         }, 3000);
+    }
+    
+    openImagePopup(imageSrc, infoText) {
+        this.popupImage.src = imageSrc;
+        this.popupInfo.textContent = infoText;
+        this.imageZoomScale = 1.0;
+        this.popupImage.style.transform = `scale(${this.imageZoomScale})`;
+        this.imagePopupModal.classList.add('active');
+        this.updateZoomInfo();
+        
+        // Add scroll event listener for zooming
+        this.imagePopupModal.addEventListener('wheel', this.boundHandleImageZoom, { passive: false });
+        
+        // Prevent body scroll when modal is open
+        document.body.style.overflow = 'hidden';
+    }
+    
+    closeImagePopup() {
+        this.imagePopupModal.classList.remove('active');
+        this.imageZoomScale = 1.0;
+        this.popupImage.style.transform = 'scale(1)';
+        
+        // Remove scroll event listener
+        this.imagePopupModal.removeEventListener('wheel', this.boundHandleImageZoom);
+        
+        // Restore body scroll
+        document.body.style.overflow = '';
+    }
+    
+    handleImageZoom(e) {
+        e.preventDefault();
+        
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        this.imageZoomScale = Math.max(0.5, Math.min(5.0, this.imageZoomScale + delta));
+        
+        this.popupImage.style.transform = `scale(${this.imageZoomScale})`;
+        this.updateZoomInfo();
+    }
+    
+    updateZoomInfo() {
+        const zoomPercent = Math.round(this.imageZoomScale * 100);
+        this.popupZoomInfo.textContent = `Zoom: ${zoomPercent}% | Scroll to zoom`;
     }
 }
 

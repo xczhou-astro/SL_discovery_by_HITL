@@ -84,6 +84,16 @@
         <!-- Notification -->
         <div id="notification" class="notification"></div>
 
+        <!-- Image Popup Modal -->
+        <div id="image-popup-modal" class="image-popup-modal">
+            <div class="image-popup-container">
+                <div class="image-popup-info" id="popup-info"></div>
+                <button class="image-popup-close" id="popup-close">&times;</button>
+                <img id="popup-image" src="" alt="Enlarged Image">
+                <div class="image-popup-zoom-info" id="popup-zoom-info">Scroll to zoom</div>
+            </div>
+        </div>
+
     </div>
     <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>
