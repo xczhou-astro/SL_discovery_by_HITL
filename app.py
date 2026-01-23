@@ -10,7 +10,12 @@ from utils import Tee
 
 os.makedirs(config.results_path, exist_ok=True)
 
-log_file = open(os.path.join(config.results_path, 'app.log'), 'w')
+if config.checkpoint_round is not None:
+    # resume logging instead of overwriting
+    log_file = open(os.path.join(config.results_path, 'app.log'), 'a')
+else:
+    log_file = open(os.path.join(config.results_path, 'app.log'), 'w')
+    
 sys.stdout = Tee(sys.stdout, log_file)
 sys.stderr = Tee(sys.stderr, log_file)
 
@@ -36,5 +41,5 @@ app.register_blueprint(views_bp)
 
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=6543)
+    app.run(debug=False, host='0.0.0.0', port=config.port)
     log_file.close()

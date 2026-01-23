@@ -16,6 +16,7 @@ from sklearn.preprocessing import StandardScaler
 import joblib
 import copy
 from tqdm import tqdm
+import time
 
 from models import LatentClassifier, FocalLoss, CudaDataLoader
 from configurations import config
@@ -23,6 +24,9 @@ from configurations import config
 class SLDetector:
     
     def __init__(self):
+        
+        # TF32 for faster training (enables TensorFloat-32 on Ampere+ GPUs)
+        torch.set_float32_matmul_precision('high')
         
         self.data_path = config.data_path
         self.images_path = config.images_path
@@ -51,7 +55,7 @@ class SLDetector:
         
         self.fix_ensembles = config.fix_ensembles
         
-        self.criterion = nn.BCELoss()
+        self.criterion = nn.BCEWithLogitsLoss()
             
         self.ensembles = []
         self.current_round = 0
@@ -114,8 +118,8 @@ class SLDetector:
         intersect_names, gal_idx, fil_idx = np.intersect1d(self.galaxy_names, df_names, return_indices=True)
         self.latents = self.latents[gal_idx].astype(np.float32)
         
-        # move all data to cuda device
-        self.latents = torch.from_numpy(self.latents).to(config.device)
+        # move all data to cuda device (non_blocking=True for async transfer)
+        self.latents = torch.from_numpy(self.latents).to(config.device, non_blocking=True)
         
         print('Latent shape: ', self.latents.shape)
         
@@ -127,7 +131,7 @@ class SLDetector:
             latents_np = self.latents.cpu().numpy()
             scaler = StandardScaler()
             latents_np = scaler.fit_transform(latents_np)
-            self.latents = torch.from_numpy(latents_np.astype(np.float32)).to(config.device)
+            self.latents = torch.from_numpy(latents_np.astype(np.float32)).to(config.device, non_blocking=True)
             
             with open(os.path.join(self.results_path, 'scaler.pkl'), 'wb') as f:
                 joblib.dump(scaler, f)
@@ -146,7 +150,9 @@ class SLDetector:
             self.ensembles.append(model)
         
         params, buffers = stack_module_state(self.ensembles)
-        self.optimizer = optim.Adam(params.values(), lr=1e-3, weight_decay=1e-5)
+        self.optimizer = optim.Adam(params.values(), lr=1e-3, weight_decay=1e-5, 
+                                    fused=True)
+        self.scaler = torch.amp.GradScaler(device=config.device)
         
         def fmodel(params, buffers, x):
             return functional_call(self.ensembles[0], (params, buffers), x)
@@ -170,11 +176,13 @@ class SLDetector:
             self.ensembles.pop(0)
             
         self.ensemble_size = len(self.ensembles)
-            
+        
         print('Current ensemble size: ', self.ensemble_size)
             
         params, buffers = stack_module_state(self.ensembles)
-        self.optimizer = optim.Adam(params.values(), lr=1e-3, weight_decay=1e-5)
+        self.optimizer = optim.Adam(params.values(), lr=1e-3, weight_decay=1e-5, 
+                                    fused=True)
+        self.scaler = torch.amp.GradScaler(device=config.device)
         
         def fmodel(params, buffers, x):
             return functional_call(self.ensembles[0], (params, buffers), x)
@@ -257,10 +265,10 @@ class SLDetector:
         
         training_names = np.array(self.selected_sl_names + self.selected_non_sl_names)
         training_labels = np.array([1] * len(self.selected_sl_names) + [0] * len(self.selected_non_sl_names))
-        training_labels = torch.from_numpy(training_labels).to(config.device)
+        training_labels = torch.from_numpy(training_labels).to(config.device, non_blocking=True)
         
         training_indices = np.array([self.name_to_idx[name] for name in training_names])
-        training_indices = torch.from_numpy(training_indices).to(config.device)
+        training_indices = torch.from_numpy(training_indices).to(config.device, non_blocking=True)
         
         training_latents = self.latents[training_indices]
         
@@ -279,6 +287,8 @@ class SLDetector:
         
         print('Training ensembles...')
         
+        start_time = time.time()
+        
         training_losses = []
         best_loss = float('inf')
         best_params = copy.deepcopy(self.params)
@@ -292,17 +302,24 @@ class SLDetector:
                 
                 self.optimizer.zero_grad()
                 
-                preds = self.predict_ensemble(self.params, self.buffers, batch_latents)
-                preds_flat = preds.reshape(-1, 1)
+                with torch.autocast(device_type=config.device, dtype=torch.bfloat16):
                 
-                labels_expanded = batch_labels.expand(len(self.ensembles), -1).reshape(-1, 1)
-                labels_expanded = labels_expanded.float()
+                    preds = self.predict_ensemble(self.params, self.buffers, batch_latents)
+                    preds_flat = preds.reshape(-1, 1)
+                    
+                    labels_expanded = batch_labels.expand(len(self.ensembles), -1).reshape(-1, 1)
+                    labels_expanded = labels_expanded.float()
+                    
+                    loss = self.criterion(preds_flat, labels_expanded)
+                    
+                    train_epoch_loss += loss.item()
                 
-                loss = self.criterion(preds_flat, labels_expanded)
-                train_epoch_loss += loss.item()
+                self.scaler.scale(loss).backward()
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
                 
-                loss.backward()
-                self.optimizer.step()
+                # loss.backward()
+                # self.optimizer.step()
                 
             avg_loss = train_epoch_loss / len(dataloader)
             training_losses.append(avg_loss)
@@ -318,6 +335,10 @@ class SLDetector:
                     patience_counter += 1
                     if patience_counter >= self.patience:
                         break
+        
+        end_time = time.time()
+        training_time = end_time - start_time
+        print(f'Training time: {training_time:.2f} seconds')
         
         self.best_params = best_params
         
@@ -380,6 +401,8 @@ class SLDetector:
         
         print('Updating scores...')
         
+        start_time = time.time()
+        
         if not self.model_trained:
             self.scores = {}
             return
@@ -388,7 +411,7 @@ class SLDetector:
         
         all_names = self.galaxy_names
         all_indices = np.array([self.name_to_idx[name] for name in all_names])
-        all_indices = torch.from_numpy(all_indices).to(config.device)
+        all_indices = torch.from_numpy(all_indices).to(config.device, non_blocking=True)
         
         all_latents = self.latents[all_indices]
         
@@ -402,8 +425,17 @@ class SLDetector:
         for batch_latents in dataloader:
             
             with torch.no_grad():
-                preds = self.predict_ensemble(self.best_params, self.buffers, batch_latents)
-            scores.append(preds.cpu().numpy()) # (num_ensembles, batch_size, 1)
+                
+                with torch.autocast(device_type=config.device, dtype=torch.bfloat16):
+                    preds_logits = self.predict_ensemble(self.best_params, self.buffers, batch_latents)
+                    # Convert logits to probabilities for scoring
+                    preds = torch.sigmoid(preds_logits)
+                    
+            scores.append(preds.cpu().numpy()) # (num_ensembles, batch_size)
+            
+        end_time = time.time()
+        updating_time = end_time - start_time
+        print(f'Updating scores time: {updating_time:.2f} seconds')
                 
         scores = np.concatenate(scores, axis=1) # (num_ensembles, num_samples)
         mean_scores = np.mean(scores, axis=0)
@@ -672,34 +704,28 @@ class SLDetector:
         return selected_names.tolist(), selected_scores.tolist()
     
     def load_history(self):
-        round_dirs = os.listdir(f'{self.results_path}')
         
         with open(os.path.join(self.results_path, 'config.json'), 'r') as f:
             saved_config = json.load(f)
         
-        # Filter for directories only that contain 'round' in name
-        round_dirs = [name for name in round_dirs if 'round' in name and os.path.isdir(os.path.join(self.results_path, name))]
         files = ['training_losses.json', 'training_losses.png', 
                  'model.pth', 'records.json', 'scores.csv', 'visualizations.png']
         
-        if len(round_dirs) == 0:
-            print('No history found. Start from fresh.')
+        if config.checkpoint_round is None:
             
+            print('No checkpoint round specified. Start from fresh.')       
+             
         else:
-            round_count = [int(name.split('_')[1]) for name in round_dirs]
-            max_round = max(round_count)
-            
-            round_path = os.path.join(f'{self.results_path}', f'round_{max_round}')
-            
-            if config.checkpoint_round is not None:
-                round_path = os.path.join(f'{self.results_path}', f'round_{config.checkpoint_round}')
+            round_path = os.path.join(f'{self.results_path}', f'round_{config.checkpoint_round}')
+            if not os.path.exists(round_path):
+                raise Exception(f'Round {config.checkpoint_round} not found.')
                 
             print(f'Loading checkpoint at {round_path}.')
             
             for file in files:
                 file_path = os.path.join(round_path, file)
                 if not os.path.exists(file_path):
-                    round_num = config.checkpoint_round if config.checkpoint_round is not None else max_round
+                    round_num = config.checkpoint_round
                     raise Exception(f'File {file} not found in round {round_num}.')
             
             with open(os.path.join(round_path, 'records.json'), 'r') as f:
@@ -742,7 +768,11 @@ class SLDetector:
             
             self.predict_ensemble = vmap(fmodel, in_dims=(0, 0, None))
             
-            self.optimizer = optim.Adam(self.params.values(), lr=1e-3, weight_decay=1e-5)
+            # Use fused optimizer for better performance
+            self.optimizer = optim.Adam(self.params.values(), lr=1e-3, weight_decay=1e-5, fused=True)
+            
+            # Reinitialize GradScaler for mixed precision training
+            self.scaler = torch.amp.GradScaler(device=config.device)
                 
             print(f'Successfully loaded model weights of {self.ensemble_size} ensembles.')
             

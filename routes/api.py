@@ -77,7 +77,7 @@ def run_training():
         result = sl_detector.train_model(epochs)
         return jsonify(result)
     except Exception as e:
-        print('Error running training.')
+        print('Error running training:', str(e))
         return jsonify({'error': str(e)}), 500
 
 

@@ -122,5 +122,5 @@ class LatentClassifier(nn.Module):
             
         logits = self.classifier(x)
 
-        # 7. Apply sigmoid for binary classification and squeeze to [batch_size]
-        return torch.sigmoid(logits).squeeze(-1)
+        # 7. Return logits (sigmoid will be applied in loss function or when probabilities are needed)
+        return logits.squeeze(-1)

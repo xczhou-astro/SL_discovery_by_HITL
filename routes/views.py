@@ -52,7 +52,6 @@ def submit_selections():
             'available_count': sl_detector.get_available_galaxies(),
         }
         
-        # Check if auto-training should be triggered (every 100 submissions)
         if sl_detector.total_submissions % num_submission_train == 0 and sl_detector.total_submissions > 0:
             response_data['should_train'] = True
         else:
@@ -68,7 +67,7 @@ def submit_selections():
         
         return jsonify(response_data)
     except Exception as e:
-        print('Error submitting selections.')
+        print(f'Error submitting selections: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
 

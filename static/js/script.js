@@ -291,6 +291,49 @@ class SLDetector {
         this.trainingOverlay.style.display = 'none';
     }
     
+    playNotificationSound() {
+        try {
+            // Create audio context (handle browser compatibility)
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContext) {
+                console.warn('Web Audio API not supported');
+                return;
+            }
+            
+            const audioContext = new AudioContext();
+            
+            // Create oscillator for a pleasant notification sound
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            
+            // Connect nodes
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            // Configure sound: two-tone chime (success sound)
+            const now = audioContext.currentTime;
+            oscillator.frequency.setValueAtTime(800, now);
+            oscillator.frequency.setValueAtTime(1000, now + 0.1);
+            oscillator.type = 'sine';
+            
+            // Set volume envelope (fade in/out smoothly)
+            gainNode.gain.setValueAtTime(0, now);
+            gainNode.gain.linearRampToValueAtTime(0.3, now + 0.01);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+            
+            // Play sound
+            oscillator.start(now);
+            oscillator.stop(now + 0.5);
+            
+            // Clean up audio context after sound finishes
+            oscillator.onended = () => {
+                audioContext.close().catch(() => {});
+            };
+        } catch (error) {
+            console.warn('Could not play notification sound:', error);
+        }
+    }
+    
     async autoTrain() {
         this.isTraining = true;
         this.showTrainingOverlay('Training model automatically...');
@@ -309,6 +352,9 @@ class SLDetector {
             const data = await response.json();
             
             if (data.success) {
+                // Play notification sound
+                this.playNotificationSound();
+                
                 this.showNotification('Model trained successfully!', 'success');
                 
                 // Update model trained status
