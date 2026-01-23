@@ -19,16 +19,15 @@ Will be updated soon.
 
 ``Bash
 python >= 3.12  
-
-numpy
-torch
-astropy
-pandas
-matplotlib
-scipy
-joblib
-tqdm
-flask
+numpy  
+torch  
+astropy  
+pandas  
+matplotlib  
+scipy  
+joblib  
+tqdm  
+flask  
 ``
 
 ## The appearance of the website
@@ -54,6 +53,7 @@ The gallery page shows the SL and non-SL sources in 2 * 5 grid. SL ones include 
 ``Python
 python app.py 
 ``
+
 The website will start at the default port 6543, while the logging and results will be saved in the `results` directory.
 
 For more detailed usage, please modify the configurations in `configurations.py`, which are self-explanatory. Here we explain some difficult-to-understand configurations:  
