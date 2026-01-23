@@ -17,7 +17,7 @@ Will be updated soon.
 
 ## Dependencies
 
-``Bash
+``
 python >= 3.12  
 numpy  
 torch  
