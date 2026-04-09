@@ -113,7 +113,7 @@ def get_gallery_data():
             print(f'First 3 non-SL names: {user_selected_non_sl_names[:3]}')
         
         # Define grade order for sorting confirmed items (high to low)
-        high_grades = ['M25'] + [f'S{i:02d}' for i in range(10, 0, -1)]
+        high_grades = ['M25'] + [f'S{i:02d}' for i in range(12, 0, -1)]
         grade_order = {grade: i for i, grade in enumerate(high_grades)}
         
         # Create confirmed SL items sorted by grade

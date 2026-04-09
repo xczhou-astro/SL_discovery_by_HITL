@@ -21,6 +21,7 @@ sys.stderr = Tee(sys.stderr, log_file)
 
 # Import detector and routes
 from detector import SLDetector
+from detector import SLDetector2nd
 from routes import api_bp, views_bp
 from routes.api import init_api
 from routes.views import init_views
@@ -29,8 +30,13 @@ from routes.views import init_views
 app = Flask(__name__)
 
 # Initialize detector
-sl_detector = SLDetector()
-
+if config.processing_stage == 'first':
+    sl_detector = SLDetector()
+elif config.processing_stage == 'second':
+    sl_detector = SLDetector2nd()
+else:
+    raise ValueError(f'Invalid processing stage: {config.processing_stage}')
+    
 # Initialize routes with detector
 init_api(sl_detector)
 init_views(sl_detector)
@@ -41,5 +47,5 @@ app.register_blueprint(views_bp)
 
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=config.port)
+    app.run(debug=False, host=config.host, port=config.port)
     log_file.close()

@@ -16,7 +16,13 @@ class CudaDataLoader:
         self.x = x_tensor
         self.y = y_tensor
         self.batch_size = batch_size if batch_size is not None else x_tensor.size(0)
-        self.weights = sampler_weights
+        # Ensure weights are on the same device as x_tensor and properly normalized
+        if sampler_weights is not None:
+            self.weights = sampler_weights.to(x_tensor.device)
+            # Normalize weights to sum to 1 for numerical stability (torch.multinomial does this internally, but explicit normalization is safer)
+            self.weights = self.weights / self.weights.sum()
+        else:
+            self.weights = None
         self.shuffle = shuffle
         self.n_samples = x_tensor.size(0)
         self.prediction_mode = y_tensor is None
@@ -40,7 +46,6 @@ class CudaDataLoader:
                 # torch.multinomial is the GPU equivalent of WeightedRandomSampler
                 # replacement=True is crucial for oversampling minority classes
                 indices = torch.multinomial(self.weights, self.batch_size, replacement=True)
-                
                 yield self.x[indices], self.y[indices]
                 
         # STRATEGY B: Standard Shuffle (If no weights)

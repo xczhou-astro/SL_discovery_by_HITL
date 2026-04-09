@@ -21,32 +21,28 @@ import h5py
 from models import LatentClassifier, CudaDataLoader, BinaryFocalLoss
 from configurations import config
 
-class SLDetector:
+class SLDetector2nd:
     
     def __init__(self):
         
-        # TF32 for faster training (enables TensorFloat-32 on Ampere+ GPUs)
         torch.set_float32_matmul_precision('high')
         
         print('Using Device: ', config.device)
         
         self.data_path = config.data_path
-        self.images_path = config.images_path
-        self.dataframe_path = config.dataframe_path
+        self.score_file = config.score_file
         self.embedding_size = config.embedding_size
         self.results_path = config.results_path
+        self.images_path = config.images_path
         
         os.makedirs(self.results_path, exist_ok=True)
         
-        self.norm_method = config.norm_method # layer or batch
+        self.norm_method = config.norm_method
         self.random_seed = config.random_seed
-        self.mag_limit = config.mag_limit
         self.score_limit = config.score_limit
-        self.spring_dataset = config.spring_dataset
-        self.spring_data_path = config.spring_data_path
+        self.record_file = config.record_file
         
         self.latents_scaled = config.latents_scaled
-        
         self.maximum_ensemble_size = config.maximum_ensemble_size
         
         self.supplement_ratio = config.supplement_ratio
@@ -100,128 +96,76 @@ class SLDetector:
         self.initialize_ensembles()
         
         self.load_data()
-        self.load_history()
+        self.train_model()
+        # self.load_history()
         
     def load_data(self):
         
-        self.df = pd.read_csv(self.dataframe_path, low_memory=False)
-        if self.spring_dataset:
-            idx_spring = ['Web' not in name for name in self.df['name']]
-            self.df = self.df[idx_spring]
+        self.df = pd.read_csv(self.score_file, low_memory=False)
         
-        print('Original data size: ', len(self.df))
+        # filter COWLS sources
+        score_order = ['M25']
+        score_order += [f'S{i:02d}' for i in range(0, 13)[::-1]]
+        
+        if self.score_limit not in score_order:
+            raise ValueError(f'Invalid score limit: {self.score_limit}')
 
-        if self.score_limit is not None:
-            # filter COWLS sources
-            score_order = ['M25']
-            score_order += [f'S{i:02d}' for i in range(0, 13)[::-1]]
-            
-            if self.score_limit not in score_order:
-                raise ValueError(f'Invalid score limit: {self.score_limit}')
-            
-            selected_scores = score_order[:score_order.index(self.score_limit) + 1]
-            print('Consider COWLS scores: ', selected_scores)
-            
-            idx_cowls = self.df['grade'].isin(selected_scores) & self.df['COWLS'] == 1
-            idx_cowls_excluded = self.df['COWLS'] == 1 & (~self.df['grade'].isin(selected_scores))
-            
-            print(f'COWLS sources: {(self.df["COWLS"] == 1).sum()}')
-            print(f'COWLS sources considered: {idx_cowls.sum()}')
-            print(f'COWLS sources excluded: {idx_cowls_excluded.sum()}')
-            
-        else:
-            idx_cowls = self.df['COWLS'] == 1
-            print(f'COWLS sources: {(self.df["COWLS"] == 1).sum()}')
-            idx_cowls_excluded = None
+        selected_scores = score_order[:score_order.index(self.score_limit) + 1]
+        print('Consider COWLS scores: ', selected_scores)
         
-        # magnitude limit from selected COWLS
-        mag_limit = self.df[idx_cowls]['ABmag_F444W'].max()
-        print(f'Maximum ABmag_F444W {mag_limit:.3f} or {mag_limit}')
+        idx_cowls = (self.df['COWLS'] == 1) & self.df['grade'].isin(selected_scores)
+        idx_cowls_excluded = (self.df['COWLS'] == 1) & (~self.df['grade'].isin(selected_scores))
+        print('COWLS sources considered: ', idx_cowls.sum())
+        print('COWLS sources excluded: ', idx_cowls_excluded.sum())
         
-        # COWLS sources (before filtering - will be filtered later)
         self.cowls_sl_names = self.df[idx_cowls]['name'].tolist()
         self.cowls_sl_grades = self.df[idx_cowls]['grade'].tolist()
         
         self.name_to_grade = {name: grade for name, grade in 
                               zip(self.cowls_sl_names, self.cowls_sl_grades)}
         
-        if idx_cowls_excluded is not None:
-            self.cowls_sl_names_excluded = self.df[idx_cowls_excluded]['name'].tolist()
+        # dataframe excluding COWLS sources that are not in the selected scores
+        self.df = self.df[~idx_cowls_excluded]
+        print('Current data size: ', len(self.df))
         
-        if self.mag_limit is not None:
-            print('Override magnitude limit by user-specified value: ', self.mag_limit)
-            mag_limit = self.mag_limit
+        if self.record_file is not None:
+            with open(self.record_file, 'r') as f:
+                records = json.load(f)
+                
+            score_threshold = min(records['min_score'], records['min_score_cowls'])
+            score_threshold = np.around(score_threshold, decimals=7)
+            print('Score threshold: ', score_threshold)
+            self.df = self.df[self.df['score'] >= score_threshold]
+            
+        print('Current data size after filtering: ', len(self.df))
         
-        idx_mag_limit = self.df['ABmag_F444W'] <= mag_limit
+        idx_selected_sl = self.df['selected_sl'] == 1
+        idx_selected_non_sl = self.df['selected_non_sl'] == 1
         
-        print(f'Number of sources after magnitude limit: {idx_mag_limit.sum()}')
-        # filter by magnitude limit on ABmag_F444W
-        self.df = self.df[idx_mag_limit].reset_index(drop=True)
+        print('Selected SL sources: ', idx_selected_sl.sum())
+        print('Selected non-SL sources: ', idx_selected_non_sl.sum())
+        
+        self.selected_sl_names += self.df[idx_selected_sl]['name'].tolist()
+        self.selected_non_sl_names += self.df[idx_selected_non_sl]['name'].tolist()
+    
+        self.last_sl_count = len(self.selected_sl_names)
+        
         df_names = self.df['name'].values.astype(str)
         
-        if self.spring_dataset:
-            print('Use spring dataset')
-            data = np.load(self.spring_data_path)
-            self.latents = data['embeddings']
-            self.galaxy_names = data['names']
-        else:
-            print('Use all dataset')
-            data = np.load(self.data_path)
-            self.latents = data['embeddings']
-            self.galaxy_names = data['names']
-            
-        # self.embedding_size = self.latents.shape[1]
+        data = np.load(self.data_path)
+        self.latents = data['embeddings']
+        self.galaxy_names = data['names']
         
-        # synchronize embeddings and dataframe, for all sources 
-        # Note that np.intersect1d sort the array
         _, gal_idx, df_idx = np.intersect1d(self.galaxy_names, df_names, return_indices=True)
         self.latents = self.latents[gal_idx].astype(np.float32)
         self.galaxy_names = self.galaxy_names[gal_idx]
         self.df = self.df.iloc[df_idx].reset_index(drop=True)
         
-        print('Final data size: ', len(self.galaxy_names))
+        self.name_to_idx = {name: i for i, name in enumerate(self.galaxy_names.tolist())}
         
-        # name to index mapping for embeddings
-        self.name_to_idx = {name: idx for name, idx in 
-                            zip(self.galaxy_names.tolist(), range(len(self.galaxy_names)))}
-        
-        # Filter COWLS names to only include those that exist in name_to_idx
-        self.cowls_sl_names = [name for name in self.cowls_sl_names if name in self.name_to_idx]
-        self.cowls_sl_grades = [self.name_to_grade[name] for name in self.cowls_sl_names]
-        
-        print('Final COWLS sources: ', len(self.cowls_sl_names))
-        
-        # Update name_to_grade to only include filtered names
-        self.name_to_grade = {name: grade for name, grade in 
-                              zip(self.cowls_sl_names, self.cowls_sl_grades)}
-        
-        # initialize self.selected_sl_names AFTER filtering
-        self.selected_sl_names += self.cowls_sl_names
-        self.last_sl_count = len(self.selected_sl_names)
-        
-        # initial SL sources are added in round 0 
-        for name in self.cowls_sl_names:
-            self.sample_round_added[name] = 0
-        
-        # move all data to cuda device (non_blocking=True for async transfer)
         self.latents = torch.from_numpy(self.latents).to(config.device, non_blocking=True)
-        
         print('Latent shape: ', self.latents.shape)
         
-        if self.latents_scaled:
-            
-            print('Scale latents using standard scaler')
-            
-            # Convert to numpy for StandardScaler, then back to torch tensor
-            latents_np = self.latents.cpu().numpy()
-            scaler = StandardScaler()
-            latents_np = scaler.fit_transform(latents_np)
-            self.latents = torch.from_numpy(latents_np.astype(np.float32)).to(config.device, non_blocking=True)
-            
-            with open(os.path.join(self.results_path, 'scaler.pkl'), 'wb') as f:
-                joblib.dump(scaler, f)
-        
-    
     def initialize_ensembles(self):
         
         self.ensembles = []
@@ -245,92 +189,17 @@ class SLDetector:
         self.ensemble_size = len(self.ensembles)
         
         print(f'Initialized {self.ensemble_size} ensembles')
-    
-    def add_ensemble(self):
         
-        print('Adding ensemble...')
-        
-        model = LatentClassifier(input_dim=self.embedding_size, d_ffn_factor=2, depth=2, 
-                                bayesian=False).to(config.device)
-        self.ensembles.append(model)
-        
-        if len(self.ensembles) > self.maximum_ensemble_size:
-            print(f'Ensemble size exceeded {self.maximum_ensemble_size}. Removing oldest model...')
-            self.ensembles.pop(0)
-            
-        self.ensemble_size = len(self.ensembles)
-        
-        print('Current ensemble size: ', self.ensemble_size)
-        
-        params, buffers = stack_module_state(self.ensembles)
-        self.optimizer = optim.Adam(params.values(), lr=1e-3, weight_decay=1e-5, 
-                                    fused=False)
-        self.scaler = torch.amp.GradScaler(device=config.device)
-        
-        def fmodel(params, buffers, x):
-            return functional_call(self.ensembles[0], (params, buffers), x)
-        
-        self.predict_ensemble = vmap(fmodel, in_dims=(0, 0, None))
-        self.params = params
-        self.buffers = buffers
-    
     def get_available_galaxies(self):
         
         # exclude selected SL and non-SL
         excluded_names = self.selected_sl_names + self.selected_non_sl_names
-        
-        # exclude COWLS sources excluded from consideration
-        if hasattr(self, 'cowls_sl_names_excluded'):
-            excluded_names += self.cowls_sl_names_excluded
         
         excluded_names = np.array(excluded_names)
         
         self.available_names = np.setdiff1d(self.galaxy_names, excluded_names)
         
         return len(self.available_names)
-    
-    def get_random_batch(self, size=10):
-        
-        self.get_available_galaxies()
-        
-        available_size = min(size, len(self.available_names))
-        if available_size == 0:
-            return [], []
-        
-        np.random.seed(self.random_seed)
-        selected_names = np.random.choice(self.available_names, available_size, replace=False)
-        
-        if self.model_trained and self.scores:
-            selected_scores = [self.scores.get(name, 0.5) for name in selected_names]
-        else:
-            selected_scores = [0.5] * available_size
-            
-        return selected_names.tolist(), selected_scores
-    
-    def get_recency_weights(self, training_names, recency_decay_alpha=0.1):
-
-        if recency_decay_alpha == 0:
-            print('Ignore recency weighting')
-            return np.ones(len(training_names), dtype=np.float32)
-
-        weights = []
-        for name in training_names:
-            # Get round when sample was added (default to -1 for COWLS/unknown)
-            round_added = self.sample_round_added[name]
-            
-            rounds_ago = self.current_round - round_added
-            
-            # Exponential decay: w = exp(-alpha * rounds_ago)
-            # More recent samples (smaller rounds_ago) get higher weights
-            # Negative exponent ensures decay: recent samples (rounds_ago=0) get weight=1.0
-            # Older samples get exponentially smaller weights
-            weight = np.exp(-recency_decay_alpha * rounds_ago)
-            weights.append(weight)
-        
-        # Return raw weights (not normalized) - normalization handled by CudaDataLoader
-        weights = np.array(weights, dtype=np.float32)
-        
-        return weights
     
     def add_selections(self, sl_names, non_sl_names):
         
@@ -610,6 +479,11 @@ class SLDetector:
         self.uncertainties = {name: uncertainty for name, uncertainty in zip(all_names, uncertainties)}
         
         dataframe = self.df.copy()
+        dataframe.drop(
+            columns=['score', 'uncertainty', 'selected_sl', 'selected_non_sl'],
+            inplace=True,
+            errors='ignore',
+        )
         
         results = {}
         results['name'] = list(self.scores.keys())
@@ -668,9 +542,9 @@ class SLDetector:
         
         with open(os.path.join(self.round_save_path, 'records.json'), 'w') as f:
             json.dump(records, f, indent=4, default=self.custom_serializer)
-
-    
+            
     def calculate_dividing_threshold(self, sl_scores, non_sl_scores):
+        
         
         gmm = GaussianMixture(n_components=2, random_state=42)
         scores = np.array(sl_scores + non_sl_scores).reshape(-1, 1)
@@ -685,7 +559,7 @@ class SLDetector:
         print(f"Dividing threshold: {threshold}")
         
         return threshold
-    
+            
     def create_visualizations(self):
         
         print('Creating visualizations...')
@@ -870,132 +744,3 @@ class SLDetector:
             selected_scores = np.array([self.scores[name] for name in selected_names])
         
         return selected_names.tolist(), selected_scores.tolist()
-    
-    def load_history(self):
-        
-        
-        files = ['training_losses.json', 'training_losses.png', 
-                 'model.pth', 'records.json', 'scores.csv', 'visualizations.png']
-        
-        if config.checkpoint_round is None:
-            
-            print('No checkpoint round specified. Start from fresh.')       
-             
-        else:
-            round_path = os.path.join(f'{self.results_path}', f'round_{config.checkpoint_round}')
-            if not os.path.exists(round_path):
-                raise Exception(f'Round {config.checkpoint_round} not found.')
-                
-            print(f'Loading checkpoint at {round_path}.')
-            
-            for file in files:
-                file_path = os.path.join(round_path, file)
-                if not os.path.exists(file_path):
-                    round_num = config.checkpoint_round
-                    raise Exception(f'File {file} not found in round {round_num}.')
-            
-            with open(os.path.join(round_path, 'records.json'), 'r') as f:
-                records = json.load(f)
-            
-            self.current_round = records['round']
-            self.selected_sl_names = records['sl_names']
-            self.selected_non_sl_names = records['non_sl_names']
-            self.total_submissions = records.get('total_submissions', 0) or 0
-            self.model_trained = records['model_trained']
-            self.dividing_threshold = records['dividing_threshold']
-            self.round_save_path = round_path
-            
-            self.num_increment_history = records['num_increment_history']
-            self.mean_increment = records['mean_increment_previous_5_rounds']
-            
-            self.last_sl_count = len(self.selected_sl_names)
-            
-            self.sample_round_added = records['sample_round_added']
-            
-            self.stats['min_score'] = records['min_score']
-            self.stats['min_score_cowls'] = records['min_score_cowls']
-            self.stats['num_over_min_score'] = records['num_over_min_score']
-            self.stats['num_over_min_score_cowls'] = records['num_over_min_score_cowls']
-            self.stats['num_lower_max_non_sl_score'] = records.get('num_lower_max_non_sl_score', 0)
-            
-            weights_path = os.path.join(round_path, 'model.pth')
-            checkpoint = torch.load(weights_path, map_location=config.device)
-            
-            params = checkpoint['ensemble_params']
-            buffers = checkpoint['buffers']
-            model_config = checkpoint['config']
-            
-            self.params = params
-            self.buffers = buffers
-            self.ensemble_size = model_config['num_ensembles']
-            
-            # recreate self.ensembles 
-            if not self.fix_ensembles:
-                self.ensembles = []
-                for i in range(self.ensemble_size):
-                    model = LatentClassifier(input_dim=self.embedding_size, 
-                                            d_ffn_factor=2, depth=2).to(config.device)
-                    self.ensembles.append(model)
-            
-            def fmodel(params, buffers, x):
-                return functional_call(self.ensembles[0], (params, buffers), x)
-            
-            self.predict_ensemble = vmap(fmodel, in_dims=(0, 0, None))
-            
-            # Use fused optimizer for better performance
-            self.optimizer = optim.Adam(self.params.values(), lr=1e-3, weight_decay=1e-5, fused=False)
-            
-            # Reinitialize GradScaler for mixed precision training
-            self.scaler = torch.amp.GradScaler(device=config.device)
-                
-            print(f'Successfully loaded model weights of {self.ensemble_size} ensembles.')
-            
-            self.get_available_galaxies()
-            
-            df_scores = pd.read_csv(os.path.join(round_path, 'scores.csv'), low_memory=False)
-            self.scores = {name: float(score) for name, score in 
-                           zip(df_scores['name'].values.astype(str), df_scores['score'].values.astype(np.float32))}
-            self.uncertainties = {name: float(uncertainty) for name, uncertainty in 
-                                   zip(df_scores['name'].values.astype(str), df_scores['uncertainty'].values.astype(np.float32))}
-            
-            print(f'Loaded history from {round_path}.')
-            print('Current round: ', self.current_round)
-
-            self.current_round += 1
-
-    def reset_round(self):
-        
-        previous_round = self.current_round - 1
-        
-        if previous_round < 0:
-            
-            # at initial round
-            self.selected_sl_names = self.cowls_sl_names.copy()
-            self.selected_non_sl_names = []
-            self.total_submissions = 0
-            self.last_sl_count = len(self.selected_sl_names)
-            
-            self.sample_round_added = {}
-            for name in self.cowls_sl_names:
-                self.sample_round_added[name] = 0
-        
-        else:
-            
-            round_path = os.path.join(self.results_path, f'round_{previous_round}')
-            records_path = os.path.join(round_path, 'records.json')
-            with open(records_path, 'r') as f:
-                records = json.load(f)
-                
-            self.selected_sl_names = records['sl_names']
-            self.selected_non_sl_names = records['non_sl_names']
-            self.total_submissions = records['total_submissions']
-            self.last_sl_count = len(self.selected_sl_names)
-            self.sample_round_added = records['sample_round_added']
-            
-        
-    def reset_model(self):
-        
-        self.model_resetted = True
-        print('Resetting ensembles...')
-        
-        self.initialize_ensembles()

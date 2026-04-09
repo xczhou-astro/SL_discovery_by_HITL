@@ -4,7 +4,7 @@ class SLDetector {
         this.currentBatch = [];
         this.currentScores = {};
         this.isTraining = false;
-        this.currentRound = 1;
+        this.currentRound = 0;
         this.modelTrained = false;
         this.submitCooldown = false;
         this.cooldownTimer = null;
@@ -18,6 +18,7 @@ class SLDetector {
         // Selection controls
         this.submitSelectionsBtn = document.getElementById('submit-selections-btn');
         this.clearSelectionsBtn = document.getElementById('clear-selections-btn');
+        this.resetModelBtn = document.getElementById('reset-model-btn');
         
         // Training overlay
         this.trainingOverlay = document.getElementById('training-overlay');
@@ -55,6 +56,7 @@ class SLDetector {
     bindEvents() {
         this.submitSelectionsBtn.addEventListener('click', () => this.submitSelections());
         this.clearSelectionsBtn.addEventListener('click', () => this.clearSelections());
+        this.resetModelBtn.addEventListener('click', () => this.resetModel());
         
         // Image popup modal events
         this.popupClose.addEventListener('click', () => this.closeImagePopup());
@@ -201,15 +203,281 @@ class SLDetector {
         }
     }
     
-    clearSelections() {
-        this.hiddenImages.clear();
+    async clearSelections() {
+        // Show confirmation popup
+        const confirmed = await this.showResetConfirmation();
         
-        // Clear visual indicators
-        document.querySelectorAll('.image-item').forEach(item => {
-            item.classList.remove('hidden');
+        if (!confirmed) {
+            return; // User cancelled
+        }
+        
+        try {
+            this.showNotification('Resetting round...', 'info');
+            
+            const response = await fetch('/app/reset_round', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                this.showNotification('Round reset successfully', 'success');
+                
+                // Update counts
+                this.updateCounts(data);
+                
+                // Clear local selections
+                this.hiddenImages.clear();
+                
+                // Load new images
+                if (data.galaxy_names && data.scores) {
+                    this.currentBatch = data.galaxy_names;
+                    this.currentScores = {};
+                    data.galaxy_names.forEach((name, index) => {
+                        this.currentScores[name] = data.scores[index];
+                    });
+                    this.renderImageGrid();
+                    this.startSubmitCooldown();
+                } else {
+                    await this.loadImages();
+                }
+                
+                // Update model trained status
+                this.modelTrained = data.model_trained;
+                
+                // Update visualization if needed
+                if (this.modelTrained) {
+                    this.showVisualization();
+                } else {
+                    this.visualizationSection.style.display = 'none';
+                }
+                
+                // Update status
+                await this.updateStatus();
+            } else {
+                this.showNotification(`Error resetting round: ${data.error || 'Unknown error'}`, 'error');
+            }
+        } catch (error) {
+            this.showNotification('Error resetting round', 'error');
+            console.error('Error resetting round:', error);
+        }
+    }
+    
+    showResetConfirmation() {
+        return new Promise((resolve) => {
+            // Create modal overlay
+            const modal = document.createElement('div');
+            modal.className = 'confirmation-modal-overlay';
+            modal.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background-color: rgba(0, 0, 0, 0.5);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 10000;
+            `;
+            
+            // Create modal content
+            const modalContent = document.createElement('div');
+            modalContent.className = 'confirmation-modal-content';
+            modalContent.style.cssText = `
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                max-width: 500px;
+                width: 90%;
+                text-align: center;
+            `;
+            
+            // Create title
+            const title = document.createElement('h2');
+            title.textContent = 'Reset Round';
+            title.style.cssText = 'margin-top: 0; margin-bottom: 15px; color: #333;';
+            
+            // Create message
+            const message = document.createElement('p');
+            message.textContent = 'Are you sure you want to reset the current round? This will reset all SL and non-SL selections to the previous round state.';
+            message.style.cssText = 'margin-bottom: 25px; color: #666; line-height: 1.5;';
+            
+            // Create button container
+            const buttonContainer = document.createElement('div');
+            buttonContainer.style.cssText = 'display: flex; gap: 10px; justify-content: center;';
+            
+            // Create confirm button
+            const confirmBtn = document.createElement('button');
+            confirmBtn.textContent = 'Confirm';
+            confirmBtn.className = 'btn btn-primary';
+            confirmBtn.style.cssText = 'padding: 10px 20px; cursor: pointer;';
+            confirmBtn.onclick = () => {
+                document.body.removeChild(modal);
+                resolve(true);
+            };
+            
+            // Create cancel button
+            const cancelBtn = document.createElement('button');
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.className = 'btn btn-secondary';
+            cancelBtn.style.cssText = 'padding: 10px 20px; cursor: pointer;';
+            cancelBtn.onclick = () => {
+                document.body.removeChild(modal);
+                resolve(false);
+            };
+            
+            // Assemble modal
+            buttonContainer.appendChild(confirmBtn);
+            buttonContainer.appendChild(cancelBtn);
+            modalContent.appendChild(title);
+            modalContent.appendChild(message);
+            modalContent.appendChild(buttonContainer);
+            modal.appendChild(modalContent);
+            
+            // Add to page
+            document.body.appendChild(modal);
+            
+            // Close on overlay click
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    document.body.removeChild(modal);
+                    resolve(false);
+                }
+            });
         });
+    }
+    
+    showResetModelConfirmation() {
+        return new Promise((resolve) => {
+            // Create modal overlay
+            const modal = document.createElement('div');
+            modal.className = 'confirmation-modal-overlay';
+            modal.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background-color: rgba(0, 0, 0, 0.5);
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 10000;
+            `;
+            
+            // Create modal content
+            const modalContent = document.createElement('div');
+            modalContent.className = 'confirmation-modal-content';
+            modalContent.style.cssText = `
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                max-width: 500px;
+                width: 90%;
+                text-align: center;
+            `;
+            
+            // Create title
+            const title = document.createElement('h2');
+            title.textContent = 'Reset Model';
+            title.style.cssText = 'margin-top: 0; margin-bottom: 15px; color: #333;';
+            
+            // Create message
+            const message = document.createElement('p');
+            message.textContent = 'Are you sure you want to reset the model? This will reinitialize all ensembles to their initial state.';
+            message.style.cssText = 'margin-bottom: 25px; color: #666; line-height: 1.5;';
+            
+            // Create button container
+            const buttonContainer = document.createElement('div');
+            buttonContainer.style.cssText = 'display: flex; gap: 10px; justify-content: center;';
+            
+            // Create confirm button
+            const confirmBtn = document.createElement('button');
+            confirmBtn.textContent = 'Confirm';
+            confirmBtn.className = 'btn btn-primary';
+            confirmBtn.style.cssText = 'padding: 10px 20px; cursor: pointer;';
+            confirmBtn.onclick = () => {
+                document.body.removeChild(modal);
+                resolve(true);
+            };
+            
+            // Create cancel button
+            const cancelBtn = document.createElement('button');
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.className = 'btn btn-secondary';
+            cancelBtn.style.cssText = 'padding: 10px 20px; cursor: pointer;';
+            cancelBtn.onclick = () => {
+                document.body.removeChild(modal);
+                resolve(false);
+            };
+            
+            // Assemble modal
+            buttonContainer.appendChild(confirmBtn);
+            buttonContainer.appendChild(cancelBtn);
+            modalContent.appendChild(title);
+            modalContent.appendChild(message);
+            modalContent.appendChild(buttonContainer);
+            modal.appendChild(modalContent);
+            
+            // Add to page
+            document.body.appendChild(modal);
+            
+            // Close on overlay click
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    document.body.removeChild(modal);
+                    resolve(false);
+                }
+            });
+        });
+    }
+    
+    async resetModel() {
+        // Show confirmation popup
+        const confirmed = await this.showResetModelConfirmation();
         
-        this.showNotification('Selections cleared', 'info');
+        if (!confirmed) {
+            return; // User cancelled
+        }
+        
+        try {
+            this.showNotification('Resetting model...', 'info');
+            
+            const response = await fetch('/app/reset_model', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            
+            if (data.success) {
+                this.showNotification('Model reset successfully', 'success');
+                
+                // Update status
+                await this.updateStatus();
+            } else {
+                this.showNotification(`Error resetting model: ${data.error || 'Unknown error'}`, 'error');
+            }
+        } catch (error) {
+            this.showNotification('Error resetting model', 'error');
+            console.error('Error resetting model:', error);
+        }
     }
     
     async submitSelections() {

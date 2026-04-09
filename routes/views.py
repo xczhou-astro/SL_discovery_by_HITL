@@ -32,11 +32,11 @@ def submit_selections():
         data = request.json
         sl_names = data.get('sl_names', [])
         non_sl_names = data.get('non_sl_names', [])
-        mode = data.get('mode', 'random')
+        # mode = data.get('mode', 'random')
         
         print(f'Received SL names: {sl_names}')
         print(f'Received Non-SL names: {non_sl_names}')
-        print(f'Mode: {mode}')
+        # print(f'Mode: {mode}')
         
         sl_detector.add_selections(sl_names, non_sl_names)
         
@@ -77,6 +77,50 @@ def serve_image(filename):
     if not filename.endswith('.jpg'):
         filename = f"{filename}.jpg"
     return send_from_directory(sl_detector.images_path, filename)
+
+@views_bp.route('/app/reset_model', methods=['POST'])
+def reset_model():
+    print('\n=== /app/reset_model called ===')
+    try:
+        sl_detector.reset_model()
+        return jsonify({'success': True})
+    except Exception as e:
+        print(f'Error resetting model: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
+@views_bp.route('/app/reset_round', methods=['POST'])
+def reset_round():
+    print('\n=== /app/reset_round called ===')
+    
+    try:
+        sl_detector.reset_round()
+        
+        print(f'After reset_round - SL count: {len(sl_detector.selected_sl_names)}, Non-SL count: {len(sl_detector.selected_non_sl_names)}')
+        
+        # Load next batch of images
+        if sl_detector.model_trained:
+            names, scores = sl_detector.get_images()
+        else:
+            names, scores = sl_detector.get_random_batch(10)
+        
+        response_data = {
+            'success': True,
+            'round': sl_detector.current_round,
+            'sl_count': len(sl_detector.selected_sl_names),
+            'non_sl_count': len(sl_detector.selected_non_sl_names),
+            'total_submissions': sl_detector.total_submissions,
+            'available_count': sl_detector.get_available_galaxies(),
+            'galaxy_names': names,
+            'scores': scores,
+            'model_trained': sl_detector.model_trained,
+        }
+        
+        return jsonify(response_data)
+    except Exception as e:
+        print(f'Error resetting round: {str(e)}')
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 
 @views_bp.route('/visualizations/<filename>')
